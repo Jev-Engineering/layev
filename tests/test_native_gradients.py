@@ -7,6 +7,16 @@ import torch
 from kev_laya.native_gradients import CanonicalFP32ShortAttention, causal_vjp
 
 
+@pytest.fixture(params=[
+    "cpu",
+    pytest.param("cuda", marks=pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="CUDA device unavailable")),
+])
+def attention_device(request):
+    """Exercise portable helper math without substituting CPU for CUDA proof."""
+    return request.param
+
+
 @pytest.mark.parametrize("prefix", [0, 8])
 def test_causal_vjp_matches_independent_double_autograd(prefix):
     generator = torch.Generator().manual_seed(2618 + prefix)
@@ -28,15 +38,14 @@ def test_causal_vjp_matches_independent_double_autograd(prefix):
         torch.testing.assert_close(observed, oracle, atol=1e-12, rtol=1e-12)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device unavailable")
 @pytest.mark.parametrize("prefix", [0, 11])
-def test_fp32_short_grouped_double_cache_matches_explicit_eager_gqa(prefix):
-    generator = torch.Generator(device="cuda").manual_seed(4521 + prefix)
-    q0 = torch.randn(1, 4, 7, 16, generator=generator, device="cuda", dtype=torch.float32)
+def test_fp32_short_grouped_double_cache_matches_explicit_eager_gqa(prefix, attention_device):
+    generator = torch.Generator(device=attention_device).manual_seed(4521 + prefix)
+    q0 = torch.randn(1, 4, 7, 16, generator=generator, device=attention_device, dtype=torch.float32)
     k0 = torch.randn(1, 2, prefix + 7, 16, generator=generator,
-                     device="cuda", dtype=torch.float32).double()
-    v0 = torch.randn(k0.shape, generator=generator, device="cuda", dtype=torch.float32).double()
-    upstream = torch.randn(q0.shape, generator=generator, device="cuda", dtype=torch.float32)
+                     device=attention_device, dtype=torch.float32).double()
+    v0 = torch.randn(k0.shape, generator=generator, device=attention_device, dtype=torch.float32).double()
+    upstream = torch.randn(q0.shape, generator=generator, device=attention_device, dtype=torch.float32)
     q, k, v = [tensor.detach().clone().requires_grad_(True) for tensor in (q0, k0, v0)]
     actual = CanonicalFP32ShortAttention.apply(q, k, v, 2)
     actual_vjp = torch.autograd.grad(actual, (q, k, v), upstream)
@@ -49,7 +58,7 @@ def test_fp32_short_grouped_double_cache_matches_explicit_eager_gqa(prefix):
     padded_k = torch.nn.functional.pad(repeated_k, (0, 0, 0, 256 - total))
     padded_v = torch.nn.functional.pad(repeated_v, (0, 0, 0, 256 - total))
     scores = torch.matmul(padded_q, padded_k.transpose(-2, -1)) * (16 ** -0.5)
-    allowed = torch.ones((256, 256), device="cuda", dtype=torch.bool).tril()
+    allowed = torch.ones((256, 256), device=attention_device, dtype=torch.bool).tril()
     scores = scores.masked_fill(~allowed, torch.finfo(scores.dtype).min)
     probabilities = torch.nn.functional.softmax(scores, dim=-1, dtype=torch.float32).to(rq.dtype)
     expected = torch.matmul(probabilities, padded_v)[..., prefix:prefix + 7, :]
@@ -76,14 +85,13 @@ def test_fp32_short_grouped_double_cache_matches_explicit_eager_gqa(prefix):
                                    atol=2e-5, rtol=2e-5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device unavailable")
 @pytest.mark.parametrize("prefix_length", [1, 11, 62, 127, 200, 254, 255])
-def test_fp32_short_fixed256_matches_any_cached_prefix(prefix_length):
-    generator = torch.Generator(device="cuda").manual_seed(6256 + prefix_length)
-    query = torch.randn(1, 4, 256, 16, generator=generator, device="cuda")
-    key = torch.randn(1, 2, 256, 16, generator=generator, device="cuda").double()
-    value = torch.randn(1, 2, 256, 16, generator=generator, device="cuda").double()
-    upstream = torch.randn(query.shape, generator=generator, device="cuda")
+def test_fp32_short_fixed256_matches_any_cached_prefix(prefix_length, attention_device):
+    generator = torch.Generator(device=attention_device).manual_seed(6256 + prefix_length)
+    query = torch.randn(1, 4, 256, 16, generator=generator, device=attention_device)
+    key = torch.randn(1, 2, 256, 16, generator=generator, device=attention_device).double()
+    value = torch.randn(1, 2, 256, 16, generator=generator, device=attention_device).double()
+    upstream = torch.randn(query.shape, generator=generator, device=attention_device)
     full_inputs = [tensor.detach().clone().requires_grad_(True)
                    for tensor in (query, key, value)]
     split_inputs = [tensor.detach().clone().requires_grad_(True)
