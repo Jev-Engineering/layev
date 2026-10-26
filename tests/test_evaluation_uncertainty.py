@@ -54,6 +54,35 @@ def test_invalid_bin_count_rejected(bins):
         summarize(rows(), bins=bins)
 
 
+@pytest.mark.parametrize("metric,value", [
+    ("correct", -0.1), ("correct", 1.1), ("correct", True),
+    ("answer_probability", -0.1), ("answer_probability", 1.1),
+    ("answer_probability", float("nan")), ("answer_probability", float("inf")),
+    ("nll", -0.1), ("nll", "0.3"), ("nll", 10 ** 400),
+    ("brier", -0.1), ("brier", float("inf")),
+    ("ordinal_mae", -0.1), ("ordinal_mae", float("nan")),
+])
+def test_invalid_measurements_rejected_before_quality_aggregation(metric, value):
+    data = rows()
+    data[0][metric] = value
+    with pytest.raises(ValueError, match=f"evaluation_row_metric_invalid:{metric}"):
+        summarize(data)
+    with pytest.raises(ValueError, match=f"evaluation_row_metric_invalid:{metric}"):
+        grouped_bootstrap(data, samples=2, seed=1)
+
+
+def test_soft_target_correctness_and_confidence_endpoints_remain_valid():
+    data = rows()[:3]
+    for row, correct, confidence, ordinal in zip(
+            data, (0.0, 0.25, 1.0), (0.0, 0.5, 1.0), (None, 0.0, 1.25), strict=True):
+        row.update(correct=correct, answer_probability=confidence, ordinal_mae=ordinal)
+    result = summarize(data)
+    assert result["accuracy"] == pytest.approx(1.25 / 3)
+    assert result["ece"] == pytest.approx(0.25 / 3)
+    assert result["ordinal_mae"] == 0.625
+    assert sum(bin_["count"] for bin_ in result["reliability"]) == len(data)
+
+
 def test_evaluation_retains_group_identity(tiny, suite):
     data, _ = suite
     report = evaluate(tiny, data["development"][:2], ByteTokenizer(), Limits(512, 8192), split="development")
@@ -136,6 +165,25 @@ def test_seed_report_cli_reads_three_actual_evaluation_reports(tmp_path, tiny, s
     assert len(result["input_sha256_by_seed"]) == 3
     with pytest.raises(FileExistsError):
         seed_report_cli([*args, "--out", str(output)])
+
+
+@pytest.mark.parametrize("metric,value", [("correct", 2.0), ("answer_probability", -0.1)])
+def test_seed_report_cli_refuses_impossible_quality_without_output(
+        tmp_path, tiny, suite, metric, value):
+    data, _ = suite
+    args = []
+    for seed in (11, 12, 13):
+        path = tmp_path / f"seed-{seed}.json"
+        report = evaluate(tiny, data["development"][:1], ByteTokenizer(), Limits(512, 8192),
+                          split="development")
+        report.update(checkpoint_sha256=f"{seed:064x}", split_sha256="a" * 64)
+        report["rows"][0][metric] = value
+        path.write_text(json.dumps(report), encoding="utf-8")
+        args.extend(("--run", f"{seed}={path}"))
+    output = tmp_path / "summary.json"
+    with pytest.raises(ValueError, match=f"evaluation_row_metric_invalid:{metric}"):
+        seed_report_cli([*args, "--out", str(output)])
+    assert not output.exists()
 
 
 def test_calibration_without_type_does_not_retain_unreported_old_temperature(tiny, suite):

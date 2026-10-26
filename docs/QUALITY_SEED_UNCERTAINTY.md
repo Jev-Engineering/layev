@@ -7,8 +7,12 @@ Each input must be an existing evaluation report from `kev_laya.evaluation.evalu
 with the same split, record/question IDs, groups, labels, question types and
 declared slice metadata. It requires the same frozen split hash and distinct
 checkpoint hashes from the CLI evaluation reports. It refuses missing or duplicate rows, mismatched
-targets, inconsistent splits, nonfinite metrics and replacement of an existing
-output. Input file hashes are included in the output.
+targets, inconsistent splits and replacement of an existing output. Before
+aggregation, each row must have finite numeric measurements: correctness and
+answer confidence within [0, 1], and nonnegative NLL, Brier and ordinal error
+(or no ordinal error for unordered tasks). Invalid measurements are rejected
+before an output is created. Fractional soft-target correctness remains valid.
+Input file hashes are included in the output.
 
 For each metric, the output gives individual seed values, their mean, sample
 standard deviation and observed range, including per-slice results. It is

@@ -10,9 +10,27 @@ from .encoding import Tokenizer, Limits
 from .model import DecisionEngine
 
 
+def _validate_metric_rows(rows: list[dict]) -> None:
+    """Reject invalid measurements before binning or bootstrap resampling."""
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("evaluation_row_metrics_invalid")
+        for name in ("correct", "answer_probability", "nll", "brier", "ordinal_mae"):
+            value = row.get(name)
+            if name == "ordinal_mae" and value is None and name in row:
+                continue
+            try:
+                valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
+            except OverflowError:
+                valid = False
+            if not valid or (name in ("correct", "answer_probability") and value > 1):
+                raise ValueError(f"evaluation_row_metric_invalid:{name}")
+
+
 def summarize(rows: list[dict], bins: int = 10) -> dict:
     if type(bins) is not int or bins < 1:
         raise ValueError("bins must be a positive integer")
+    _validate_metric_rows(rows)
     if not rows:
         return {"count": 0, "nll": None, "brier": None, "ece": None, "accuracy": None,
                 "ordinal_mae": None, "reliability": [], "risk_coverage": []}
@@ -183,6 +201,7 @@ def grouped_bootstrap(rows: list[dict], *, samples: int = 1000, seed: int = 42,
     if len(grouped) < 2:
         result["reason"] = "fewer than two source groups"
         return result
+    _validate_metric_rows(rows)
     groups = [grouped[key] for key in sorted(grouped)]
     rng = random.Random(seed)  # Do not mutate training/evaluation global RNG.
     values = {key: [] for key in fields}
